@@ -1,0 +1,17 @@
+{
+  "name": "neutral-simulation",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  }
+}
