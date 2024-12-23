@@ -41,7 +41,7 @@ export class AMMPosition {
 
   generateDailyYield() {
     const positionValue = this.estimatePositionValueInY();
-    return (positionValue * this.supplyInterest) / 365;
+    return ((positionValue * this.supplyInterest) / 365 / 24 / 60) * 5;
   }
 }
 
@@ -73,8 +73,8 @@ export class LendingPosition {
   }
 
   accrueDailyInterest() {
-    this.debt *= 1 + this.borrowingInterest / 365;
-    this.collateral *= 1 + this.supplyInterest / 365;
+    this.debt *= 1 + (this.borrowingInterest / 365 / 24 / 60) * 5;
+    this.collateral *= 1 + (this.supplyInterest / 365 / 24 / 60) * 5;
 
     if (this.isLiquidatable) {
       throw new Error("Liquidation just happened and we are broke :(", {
@@ -96,6 +96,7 @@ export class Strategy {
   public unusedUSDT: number; // yield generated in USDT
 
   private readonly priceProvider: PriceProvider;
+  public totalRebalances: number = 0;
 
   constructor(
     usdtToInvest: number,
@@ -135,7 +136,7 @@ export class Strategy {
     );
   }
 
-  nextDay(newPrice: number) {
+  nextPrice(newPrice: number) {
     this.priceProvider.setPrice(newPrice);
     this.lendingPosition.accrueDailyInterest();
 
@@ -166,6 +167,7 @@ export class Strategy {
     this.addOutstandingLiquidityToAMM();
 
     const valueAfterRebalance = this.estimateTotalStrategyValue();
+    this.totalRebalances++;
 
     // Sanity check: the total value should not increase after rebalance
     if (valueAfterRebalance > valueBeforeRebalance + 0.00001) {

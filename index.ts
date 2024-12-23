@@ -1,6 +1,6 @@
 import { writeFileSync } from "fs";
-import { readPrices } from "./prices";
-import { LendingPosition, PriceProvider, Strategy } from "./simulation";
+import { readPricesBinance } from "./prices";
+import { Strategy } from "./simulation";
 
 const USDT_TO_INVEST = 1000000;
 const RATIO = 0.33;
@@ -10,7 +10,7 @@ const AMM_SUPPLY_INTEREST = 0.2;
 const LIQUIDATION_THRESHOLD = 1.25;
 const SWAP_FEE = 0.01;
 
-const allPrices = readPrices().filter(
+const allPrices = readPricesBinance().filter(
   (p) => p.date.includes("2024") || p.date.includes("2023")
 );
 
@@ -38,11 +38,13 @@ for (let i = 0; i < allPrices.length; i++) {
 
   console.info("iteration: ", i, "price: ", price, "date: ", date);
 
-  strategy.nextDay(parseFloat(price));
-  const iterationStatus = strategy.logStatus();
+  strategy.nextPrice(parseFloat(price));
 
-  csv += `${date},${Object.values(iterationStatus).join(",")}` + "\n";
+  // csv += `${date},${Object.values(iterationStatus).join(",")}` + "\n";
 }
+
+const iterationStatus = strategy.logStatus();
+console.log(allPrices[0].date, allPrices[allPrices.length - 1].date, iterationStatus);
 
 writeFileSync("./simulation.csv", csv, {
   flush: true,
