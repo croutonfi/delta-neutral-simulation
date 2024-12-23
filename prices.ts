@@ -1,6 +1,20 @@
 import fs from "fs";
 
-export function readPrices(fileName = "./prices/ton-prices.csv") {
+type BinancePriceEntry = {
+  openTime: number;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: string;
+  closeTime: number;
+  quoteVolume: string;
+  trades: number;
+  baseAssetVolume: string;
+  quoteAssetVolume: string;
+};
+
+export function readCsvPrices(fileName = "./prices/ton-prices.csv") {
   const file = fs.readFileSync(fileName, "utf8");
 
   const list = file.split("\n");
@@ -15,12 +29,16 @@ export function readPrices(fileName = "./prices/ton-prices.csv") {
   return data;
 }
 
-export function readPricesBinance(fileName = "./prices/binance-ton-prices.json") {
+export function readPricesBinance(
+  fileName = "./prices/binance-eth-prices.json"
+) {
   const file = fs.readFileSync(fileName, "utf8");
-  const list = JSON.parse(file);
+  const list: BinancePriceEntry[] = JSON.parse(file);
 
-  return list.map((item: any) => {
-    return { date: new Date(item.closeTime).toISOString(), price: item.close };
-  })
-
+  return list.map((item) => {
+    return {
+      date: new Date(item.closeTime).toISOString(),
+      price: item.close,
+    };
+  });
 }
