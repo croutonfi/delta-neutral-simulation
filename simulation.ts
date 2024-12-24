@@ -1,33 +1,39 @@
-export class PriceProvider {
-  currentPrice: number;
+import BN from "bignumber.js";
 
-  constructor(currentPrice: number) {
-    this.currentPrice = currentPrice;
+const ZERO = new BN(0);
+const ONE = new BN(1);
+const MINUTES_IN_YEAR = 365 * 24 * 60;
+
+export class PriceProvider {
+  currentPrice: BN;
+
+  constructor(currentPrice: BN.Value) {
+    this.currentPrice = new BN(currentPrice);
   }
 
-  setPrice(newPrice: number) {
-    this.currentPrice = newPrice;
+  setPrice(newPrice: BN.Value) {
+    this.currentPrice = new BN(newPrice);
   }
 }
 
 export class AMMPosition {
   constructor(
-    public initialReserveX: number,
-    public initialReserveY: number,
-    public supplyInterest: number,
+    public initialReserveX: BN,
+    public initialReserveY: BN,
+    public supplyInterest: BN,
 
     private readonly priceProvider: PriceProvider
   ) {}
 
   getReservesForCurrentPrice(): {
-    reserveX: number;
-    reserveY: number;
+    reserveX: BN;
+    reserveY: BN;
   } {
     const currentPrice = this.priceProvider.currentPrice;
-    const k = this.initialReserveX * this.initialReserveY;
+    const k = this.initialReserveX.times(this.initialReserveY);
 
-    const newReserveX = Math.sqrt(k / currentPrice);
-    const newReserveY = currentPrice * newReserveX;
+    const newReserveX = k.div(currentPrice).sqrt();
+    const newReserveY = currentPrice.times(newReserveX);
 
     return { reserveX: newReserveX, reserveY: newReserveY };
   }
@@ -36,88 +42,113 @@ export class AMMPosition {
     const { reserveX, reserveY } = this.getReservesForCurrentPrice();
     const price = this.priceProvider.currentPrice;
 
-    return reserveX * price + reserveY;
+    return reserveX.times(price).plus(reserveY);
   }
 
-  generateDailyYield() {
-    const positionValue = this.estimatePositionValueInY();
-    return ((positionValue * this.supplyInterest) / 365 / 24 / 60) * 5;
+  generateYield(periodInMinutes: BN) {
+    return this.estimatePositionValueInY()
+      .times(this.supplyInterest)
+      .times(periodInMinutes)
+      .dividedBy(MINUTES_IN_YEAR);
   }
 }
 
 export class LendingPosition {
   constructor(
-    public collateral: number, // expected to be in USDT
-    public debt: number, // is expected to be in TON
-    public liquidationThreshold: number,
-    public borrowingInterest: number,
-    public supplyInterest: number,
+    public collateral: BN, // expected to be in USDT
+    public debt: BN, // is expected to be in TON
+    public liquidationThreshold: BN,
+    public borrowingInterest: BN,
+    public supplyInterest: BN,
 
     private readonly priceProvider: PriceProvider
   ) {}
 
   getDebtValue() {
-    return this.debt * this.priceProvider.currentPrice;
+    return this.debt.times(this.priceProvider.currentPrice);
   }
 
   estimatePositionValue() {
-    return this.collateral - this.getDebtValue();
+    return this.collateral.minus(this.getDebtValue());
   }
 
   get isLiquidatable() {
-    return this.getDebtValue() > this.collateral / this.liquidationThreshold;
+    return this.getDebtValue().gt(
+      this.collateral.div(this.liquidationThreshold)
+    );
   }
 
   get utilization() {
-    return (this.getDebtValue() * this.liquidationThreshold) / this.collateral;
+    return this.getDebtValue()
+      .times(this.liquidationThreshold)
+      .dividedBy(this.collateral);
   }
 
-  accrueDailyInterest() {
-    this.debt *= 1 + (this.borrowingInterest / 365 / 24 / 60) * 5;
-    this.collateral *= 1 + (this.supplyInterest / 365 / 24 / 60) * 5;
+  accrueInterest(periodInMinutes: BN) {
+    this.debt = this.debt
+      .times(
+        ONE.plus(
+          this.borrowingInterest.times(periodInMinutes).div(MINUTES_IN_YEAR)
+        )
+      )
+      .decimalPlaces(9, BN.ROUND_FLOOR);
+
+    this.collateral = this.collateral
+      .times(
+        ONE.plus(
+          this.supplyInterest.times(periodInMinutes).div(MINUTES_IN_YEAR)
+        )
+      )
+      .decimalPlaces(6, BN.ROUND_FLOOR);
 
     if (this.isLiquidatable) {
       throw new Error("Liquidation just happened and we are broke :(", {
-        cause: `${this.getDebtValue()} > ${
-          this.collateral / this.liquidationThreshold
-        }`,
+        cause: `${this.getDebtValue()} > ${this.collateral.div(
+          this.liquidationThreshold
+        )}`,
       });
     }
   }
 }
 
 export class Strategy {
-  public idealRatio: number; // ideal ratio between AMM and lending
   public ammPosition: AMMPosition;
   public lendingPosition: LendingPosition;
-  public swapFee: number; // fee for swapping tokens
+  public idealRatio: BN; // ideal ratio between AMM and lending
+  public swapFee: BN; // fee for swapping tokens
+  public interestPeriod: BN; // period for interest accrual
+  public lastRebalancePrice: BN;
 
-  public unusedTON: number; // yield generated in TON
-  public unusedUSDT: number; // yield generated in USDT
+  public unusedTON: BN; // yield generated in TON
+  public unusedUSDT: BN; // yield generated in USDT
 
   private readonly priceProvider: PriceProvider;
+
   public totalRebalances: number = 0;
 
   constructor(
-    usdtToInvest: number,
-    ratio: number,
-    ammSupplyInterest: number,
-    borrowInterest: number,
-    supplyInterest: number,
-    liquidationThreshold: number,
-    initialPrice: number,
-    swapFee: number = 0.005
+    usdtToInvest: BN,
+    ratio: BN,
+    ammSupplyInterest: BN,
+    borrowInterest: BN,
+    supplyInterest: BN,
+    liquidationThreshold: BN,
+    initialPrice: BN,
+    swapFee: BN,
+    interestPeriod: BN
   ) {
     this.idealRatio = ratio;
     this.swapFee = swapFee;
-    this.unusedTON = 0;
-    this.unusedUSDT = 0;
+    this.unusedTON = ZERO;
+    this.unusedUSDT = ZERO;
+    this.interestPeriod = interestPeriod;
+    this.lastRebalancePrice = initialPrice;
 
     this.priceProvider = new PriceProvider(initialPrice);
 
-    const ammReserveY = usdtToInvest * ratio;
-    const lendingCollateral = usdtToInvest - ammReserveY;
-    const amountToBorrow = ammReserveY / this.priceProvider.currentPrice;
+    const ammReserveY = usdtToInvest.times(ratio);
+    const lendingCollateral = usdtToInvest.minus(ammReserveY);
+    const amountToBorrow = ammReserveY.div(this.priceProvider.currentPrice);
 
     this.lendingPosition = new LendingPosition(
       lendingCollateral,
@@ -138,21 +169,20 @@ export class Strategy {
 
   nextPrice(newPrice: number) {
     this.priceProvider.setPrice(newPrice);
-    this.lendingPosition.accrueDailyInterest();
+    this.lendingPosition.accrueInterest(this.interestPeriod);
 
     // We assume that the AMM is generating yield in the USDT tokens
-    const yieldGenerated = this.ammPosition.generateDailyYield();
-    this.unusedUSDT += yieldGenerated;
+    const yieldGenerated = this.ammPosition.generateYield(this.interestPeriod);
+    this.unusedUSDT = this.unusedUSDT.plus(yieldGenerated);
 
     const deviations = this.computeDeviationFromIdealSetup();
+    const deviationRatio = deviations.deviationAmmReserveY
+      .div(this.ammPosition.getReservesForCurrentPrice().reserveY)
+      .abs();
 
-    if (
-      Math.abs(
-        deviations.deviationAmmReserveY /
-          this.ammPosition.getReservesForCurrentPrice().reserveY
-      ) > 0.1
-    ) {
+    if (deviationRatio.gt(0.1)) {
       this.rebalance();
+      this.lastRebalancePrice = this.priceProvider.currentPrice;
     }
   }
 
@@ -170,45 +200,58 @@ export class Strategy {
     this.totalRebalances++;
 
     // Sanity check: the total value should not increase after rebalance
-    if (valueAfterRebalance > valueBeforeRebalance + 0.00001) {
+    if (valueAfterRebalance.gt(valueBeforeRebalance.plus(0.00001))) {
       throw new Error(
         `Rebalance led to system incosistency: ${valueBeforeRebalance} != ${valueAfterRebalance}`
       );
     }
   }
 
-  useUnusedUSDT(amount: number) {
-    let covered = Math.min(this.unusedUSDT, amount);
-    let leftUsdtToCover = amount - covered;
-    this.unusedUSDT -= covered;
+  coverAmountWithUSDT(amount: BN) {
+    let covered = BN.min(this.unusedUSDT, amount);
 
-    let swapFee = 1 - this.swapFee;
+    const leftUsdtToCover = amount.minus(covered);
+    this.unusedUSDT = this.unusedUSDT.minus(covered);
 
-    let tonToSwap = Math.min(
+    const swapFee = ONE.minus(this.swapFee);
+
+    const tonToSwap = BN.min(
       this.unusedTON,
-      leftUsdtToCover / this.priceProvider.currentPrice / swapFee
+      leftUsdtToCover
+        .dividedBy(this.priceProvider.currentPrice)
+        .dividedBy(swapFee)
     );
 
-    this.unusedTON -= tonToSwap;
-    covered += swapFee * tonToSwap * this.priceProvider.currentPrice;
+    this.unusedTON = this.unusedTON.minus(tonToSwap);
+
+    const swapOutput = tonToSwap
+      .times(swapFee)
+      .times(this.priceProvider.currentPrice);
+
+    covered = covered.plus(swapOutput);
 
     return covered;
   }
 
-  useUnusedTON(amount: number) {
-    let covered = Math.min(this.unusedTON, amount);
-    let leftTonToCover = amount - covered;
-    this.unusedTON -= covered;
+  coverAmountWithTON(amount: BN) {
+    let covered = BN.min(this.unusedTON, amount);
 
-    let swapFee = 1 - this.swapFee;
+    const leftTonToCover = amount.minus(covered);
+    this.unusedTON = this.unusedTON.minus(covered);
 
-    let usdtToSwap = Math.min(
+    const swapFee = ONE.minus(this.swapFee);
+
+    const usdtToSwap = BN.min(
       this.unusedUSDT,
-      (leftTonToCover * this.priceProvider.currentPrice) / swapFee
+      leftTonToCover.times(this.priceProvider.currentPrice).div(swapFee)
     );
 
-    this.unusedUSDT -= usdtToSwap;
-    covered += (swapFee * usdtToSwap) / this.priceProvider.currentPrice;
+    this.unusedUSDT = this.unusedUSDT.minus(usdtToSwap);
+    const swapOutput = usdtToSwap
+      .times(swapFee)
+      .div(this.priceProvider.currentPrice);
+
+    covered = covered.plus(swapOutput);
 
     return covered;
   }
@@ -216,11 +259,12 @@ export class Strategy {
   coverOutstandingCollateral() {
     const deviations = this.computeDeviationFromIdealSetup();
 
-    if (deviations.deviationLendingCollateral < 0) {
-      const amountToCover = Math.abs(deviations.deviationLendingCollateral);
+    if (deviations.deviationLendingCollateral.lt(0)) {
+      const amountToCover = deviations.deviationLendingCollateral.abs();
 
-      const covered = this.useUnusedUSDT(amountToCover);
-      this.lendingPosition.collateral += covered;
+      const covered = this.coverAmountWithUSDT(amountToCover);
+      this.lendingPosition.collateral =
+        this.lendingPosition.collateral.plus(covered);
 
       console.log("Covered collateral: ", covered);
     }
@@ -229,11 +273,11 @@ export class Strategy {
   coverOutstandingBorrowedAmount() {
     const deviations = this.computeDeviationFromIdealSetup();
 
-    if (deviations.deviationAmountToBorrow > 0) {
-      const amountToCover = Math.abs(deviations.deviationAmountToBorrow);
+    if (deviations.deviationAmountToBorrow.gt(0)) {
+      const amountToCover = deviations.deviationAmountToBorrow.abs();
 
-      const covered = this.useUnusedTON(amountToCover);
-      this.lendingPosition.debt -= covered;
+      const covered = this.coverAmountWithTON(amountToCover);
+      this.lendingPosition.debt = this.lendingPosition.debt.minus(covered);
 
       console.log("Covered borrowed amount: ", covered);
     }
@@ -241,43 +285,46 @@ export class Strategy {
 
   addOutstandingLiquidityToAMM() {
     const deviations = this.computeDeviationFromIdealSetup();
+    const deviationRatio = deviations.deviationAmmReserveY.div(
+      this.ammPosition.getReservesForCurrentPrice().reserveY
+    );
 
-    if (
-      deviations.deviationAmmReserveY /
-        this.ammPosition.getReservesForCurrentPrice().reserveY <
-      -0.05
-    ) {
+    if (deviationRatio.lt(-0.05)) {
       const { reserveX, reserveY } =
         this.ammPosition.getReservesForCurrentPrice();
 
-      const idealReserveY = reserveY - deviations.deviationAmmReserveY;
-      const idealReserveX = reserveX * (idealReserveY / reserveY);
+      const idealReserveY = reserveY.minus(deviations.deviationAmmReserveY);
+      const idealReserveX = reserveX.times(idealReserveY).div(reserveY);
 
-      let outstandingX = idealReserveX - reserveX;
-      let outstandingY = idealReserveY - reserveY;
+      let outstandingX = idealReserveX.minus(reserveX);
+      let outstandingY = idealReserveY.minus(reserveY);
 
-      const totalUnused = this.estimateUnusedFundsValue() * (1 - this.swapFee); // multiplied by (1 - swapFee) to account for the potential swap fee
-      const totalOutstanding =
-        outstandingX * this.priceProvider.currentPrice + outstandingY;
+      const totalUnused = this.estimateUnusedFundsValue().times(
+        ONE.minus(this.swapFee)
+      ); // multiplied by (1 - swapFee) to account for the potential swap fee
+
+      const totalOutstanding = outstandingX
+        .times(this.priceProvider.currentPrice)
+        .plus(outstandingY);
 
       if (totalUnused < totalOutstanding) {
-        const ratio = totalUnused / totalOutstanding;
-        outstandingX *= ratio;
-        outstandingY *= ratio;
+        const ratio = totalUnused.div(totalOutstanding);
+        outstandingX = outstandingX.times(ratio);
+        outstandingY = outstandingY.times(ratio);
       }
 
-      const availableX = this.useUnusedTON(outstandingX);
-      const availableY = this.useUnusedUSDT(outstandingY);
+      const availableX = this.coverAmountWithTON(outstandingX);
+      const availableY = this.coverAmountWithUSDT(outstandingY);
 
-      const price = availableY / availableX;
+      const price = availableY.div(availableX);
       if (!areValuesClose(price, this.priceProvider.currentPrice)) {
         throw new Error(
           `System is fucked up ${price} != ${this.priceProvider.currentPrice}`
         );
       }
 
-      this.ammPosition.initialReserveX = reserveX + availableX;
-      this.ammPosition.initialReserveY = reserveY + availableY;
+      this.ammPosition.initialReserveX = reserveX.plus(availableX);
+      this.ammPosition.initialReserveY = reserveY.plus(availableY);
     }
   }
 
@@ -285,21 +332,21 @@ export class Strategy {
     const deviations = this.computeDeviationFromIdealSetup();
 
     // @todo add more sophisticated conditions for withdrawing
-    if (deviations.deviationAmmReserveY > 0) {
+    if (deviations.deviationAmmReserveY.gt(0)) {
       const { reserveX, reserveY } =
         this.ammPosition.getReservesForCurrentPrice();
 
-      const idealReserveY = reserveY - deviations.deviationAmmReserveY;
-      const idealReserveX = reserveX * (idealReserveY / reserveY);
+      const idealReserveY = reserveY.minus(deviations.deviationAmmReserveY);
+      const idealReserveX = reserveX.times(idealReserveY).div(reserveY);
 
       this.ammPosition.initialReserveX = idealReserveX;
       this.ammPosition.initialReserveY = idealReserveY;
 
-      const freeX = reserveX - idealReserveX;
-      const freeY = reserveY - idealReserveY;
+      const freeX = reserveX.minus(idealReserveX);
+      const freeY = reserveY.minus(idealReserveY);
 
-      this.unusedTON += freeX;
-      this.unusedUSDT += freeY;
+      this.unusedTON = this.unusedTON.plus(freeX);
+      this.unusedUSDT = this.unusedUSDT.plus(freeY);
     }
   }
 
@@ -307,11 +354,12 @@ export class Strategy {
     const deviations = this.computeDeviationFromIdealSetup();
 
     // @todo add more sophisticated conditions for withdrawing
-    if (deviations.deviationLendingCollateral > 0) {
+    if (deviations.deviationLendingCollateral.gt(0)) {
       const amountToWithdraw = deviations.deviationLendingCollateral;
 
-      this.lendingPosition.collateral -= amountToWithdraw;
-      this.unusedUSDT += amountToWithdraw;
+      this.lendingPosition.collateral =
+        this.lendingPosition.collateral.minus(amountToWithdraw);
+      this.unusedUSDT = this.unusedUSDT.plus(amountToWithdraw);
     }
   }
 
@@ -319,31 +367,33 @@ export class Strategy {
     const deviations = this.computeDeviationFromIdealSetup();
 
     // @todo add more sophisticated conditions for borrowing
-    if (deviations.deviationAmountToBorrow < 0) {
-      const toBorrow = Math.abs(deviations.deviationAmountToBorrow);
-      this.lendingPosition.debt += toBorrow;
-      this.unusedTON += toBorrow;
+    if (deviations.deviationAmountToBorrow.lt(0)) {
+      const toBorrow = deviations.deviationAmountToBorrow.abs();
+      this.lendingPosition.debt = this.lendingPosition.debt.plus(toBorrow);
+      this.unusedTON = this.unusedTON.plus(toBorrow);
     }
   }
 
   estimateUnusedFundsValue() {
-    return this.unusedTON * this.priceProvider.currentPrice + this.unusedUSDT;
+    return this.unusedTON
+      .times(this.priceProvider.currentPrice)
+      .plus(this.unusedUSDT);
   }
 
   estimateTotalStrategyValue() {
-    return (
-      this.lendingPosition.estimatePositionValue() +
-      this.ammPosition.estimatePositionValueInY() +
-      this.estimateUnusedFundsValue()
-    );
+    return this.lendingPosition
+      .estimatePositionValue()
+      .plus(this.ammPosition.estimatePositionValueInY())
+      .plus(this.estimateUnusedFundsValue());
   }
 
   computeIdealSetupForCurrentPrice() {
     const totalValue = this.estimateTotalStrategyValue();
-    const idealAmmReserveY = totalValue * this.idealRatio;
-    const idealLendingCollateral = totalValue - idealAmmReserveY;
-    const idealAmountToBorrow =
-      idealAmmReserveY / this.priceProvider.currentPrice;
+    const idealAmmReserveY = totalValue.times(this.idealRatio);
+    const idealLendingCollateral = totalValue.minus(idealAmmReserveY);
+    const idealAmountToBorrow = idealAmmReserveY.div(
+      this.priceProvider.currentPrice
+    );
 
     return {
       idealLendingCollateral,
@@ -362,10 +412,11 @@ export class Strategy {
     const currentAmountToBorrow = this.lendingPosition.debt;
 
     return {
-      deviationAmmReserveY: currentAmmReserveY - idealAmmReserveY,
-      deviationLendingCollateral:
-        currentLendingCollateral - idealLendingCollateral,
-      deviationAmountToBorrow: currentAmountToBorrow - idealAmountToBorrow,
+      deviationAmmReserveY: currentAmmReserveY.minus(idealAmmReserveY),
+      deviationLendingCollateral: currentLendingCollateral.minus(
+        idealLendingCollateral
+      ),
+      deviationAmountToBorrow: currentAmountToBorrow.minus(idealAmountToBorrow),
     };
   }
 
@@ -391,14 +442,14 @@ export class Strategy {
       "Deviation AMM Reserve Y": deviations.deviationAmmReserveY,
       "Deviation Lending Collateral": deviations.deviationLendingCollateral,
       "Deviation Borrowed Amount": deviations.deviationAmountToBorrow,
+      "Last rebalance price": this.lastRebalancePrice,
+      "Total rebalances": this.totalRebalances,
     };
-
-    console.table(logData);
 
     return logData;
   }
 }
 
-function areValuesClose(a: number, b: number, threshold = 0.001) {
-  return Math.abs(a - b) < threshold;
+function areValuesClose(a: BN, b: BN, threshold = 0.001) {
+  return a.minus(b).abs().lt(threshold);
 }

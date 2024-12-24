@@ -12,6 +12,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "bignumber.js": "^9.1.2",
     "binance-api-node": "^0.12.9",
     "tsx": "^4.19.2"
   }

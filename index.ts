@@ -1,20 +1,31 @@
+import BN from "bignumber.js";
+
+BN.config({ DECIMAL_PLACES: 9, ROUNDING_MODE: BN.ROUND_DOWN });
+
 import { writeFileSync } from "fs";
 import { readPricesBinance } from "./prices";
 import { Strategy } from "./simulation";
+import {
+  convertToReadableObject,
+  createCsvHeader,
+  createCsvRow,
+} from "./utils";
 
-const USDT_TO_INVEST = 1000000;
-const RATIO = 0.33;
-const BORROW_INTEREST = 0.02;
-const SUPPLY_INTEREST = 0.08;
-const AMM_SUPPLY_INTEREST = 0.2;
-const LIQUIDATION_THRESHOLD = 1.25;
-const SWAP_FEE = 0.01;
+const USDT_TO_INVEST = new BN(1_000_000);
+const RATIO = new BN("0.33");
+const BORROW_INTEREST = new BN("0.02");
+const SUPPLY_INTEREST = new BN("0.08");
+const AMM_SUPPLY_INTEREST = new BN("0.2");
+const LIQUIDATION_THRESHOLD = new BN("1.25");
+const SWAP_FEE = new BN("0.01");
+const INTEREST_PERIOD_MINUTES = new BN(5);
 
-const allPrices = readPricesBinance().filter(
-  (p) => p.date.includes("2024") || p.date.includes("2023")
-);
+const allPrices = readPricesBinance();
+// .filter(
+//   (p) => p.date.includes("2024") || p.date.includes("2023")
+// );
 
-const startPrice = parseFloat(allPrices[0].price);
+const START_PRICE = new BN(allPrices[0].price);
 
 const strategy = new Strategy(
   USDT_TO_INVEST,
@@ -23,28 +34,33 @@ const strategy = new Strategy(
   BORROW_INTEREST,
   SUPPLY_INTEREST,
   LIQUIDATION_THRESHOLD,
-  startPrice,
-  SWAP_FEE
+  START_PRICE,
+  SWAP_FEE,
+  INTEREST_PERIOD_MINUTES
 );
 
-let csv = "";
 const startingStatus = strategy.logStatus();
 
-csv += "Date," + Object.keys(startingStatus).join(",") + "\n";
-csv += allPrices[0].date + "," + Object.values(startingStatus).join(",") + "\n";
+console.table(convertToReadableObject(startingStatus));
+
+let csv = createCsvHeader(startingStatus);
+csv += createCsvRow(allPrices[0].date, startingStatus);
 
 for (let i = 0; i < allPrices.length; i++) {
   const { date, price } = allPrices[i];
 
-  console.info("iteration: ", i, "price: ", price, "date: ", date);
-
   strategy.nextPrice(parseFloat(price));
+  const logData = strategy.logStatus();
 
-  // csv += `${date},${Object.values(iterationStatus).join(",")}` + "\n";
+  if (i % 1000 === 0) {
+    console.table(convertToReadableObject(logData));
+  }
+
+  csv += createCsvRow(date, logData);
 }
 
-const iterationStatus = strategy.logStatus();
-console.log(allPrices[0].date, allPrices[allPrices.length - 1].date, iterationStatus);
+console.table(convertToReadableObject(strategy.logStatus()));
+console.log("Total rebalances:", strategy.totalRebalances);
 
 writeFileSync("./simulation.csv", csv, {
   flush: true,
